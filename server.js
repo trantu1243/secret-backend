@@ -71,17 +71,17 @@ app.post("/login", (req, res) =>{
             } else if (!user) {
                 //
                 console.log("Login failed!");
-                res.status(401).json({ success: false, message: 'Invalid credentials' });
+                res.status(401).json({ success: false, message: "Invalid credentials" });
             } else {
                 req.login(user, (err) => {
                     if (err) {
                         console.log(err);
-                        res.status(401).json({ success: false, message: 'Invalid credentials' });
+                        res.status(401).json({ success: false, message: "Invalid credentials" });
                         //
                     } else {
                         //
                         console.log("Logged in successfully!");
-                        res.json({ success: true, message: 'Login successful' });
+                        res.json({ success: true, message: "Login successful" });
                     }
         
                     
@@ -101,12 +101,14 @@ app.post("/register", async (req, res) => {
                 const newUser = await User.register(new User({ username: req.body.username }), req.body.password);
                 await passport.authenticate("local")(req, res, () => {
                     console.log("Sign Up Success");
+                    res.json({ success: true, message: "Sign up success" });
                 });
             } catch (err) {
                 console.error(err);
                 if (err.name === "UserExistsError") {
                     
                     console.log("Username already exists. Please choose another username.");
+                    res.status(401).json({ success: false, message: "Invalid credentials" });
                 }
                 
             }
@@ -118,7 +120,10 @@ app.route("/logout")
     .get((req, res) => {
         req.logout(function(err) {
             if (err) console.log(err);
-            else console.log("Log out successfully");
+            else {
+                console.log("Log out successfully");
+                res.json({ success: true, message: 'Logout successful' });
+            }
           });
     })
 
