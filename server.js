@@ -6,6 +6,10 @@ import passportLocalMongoose from "passport-local-mongoose"
 import session from "express-session";
 import 'dotenv/config';
 import cors from "cors";
+import jwt from "jsonwebtoken";
+import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
+
+
 
 
 
@@ -42,7 +46,26 @@ userSchema.plugin(passportLocalMongoose);
 
 const User = mongoose.model("User", userSchema);
 
+
+// passport-local
 passport.use(User.createStrategy());
+
+// passport-jwt
+const opts = {
+    jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+    secretOrKey: process.env.SECRET_TOKEN,
+}
+passport.use(new JwtStrategy(opts, (jwt_payload, done) => {
+  
+    const result = User.findById(jwt_payload.user.id); 
+    if (result) {
+        return done(null, result);
+    } else {
+        return done(null, false);
+    }
+    
+  }));
+
 
 passport.serializeUser(function(user, cb) {
     process.nextTick(function() {
@@ -56,68 +79,94 @@ passport.deserializeUser(function(user, cb) {
     });
 });
 
+const authenticateToken = (req, res, next) => {
+  
+    passport.authenticate('jwt', { session: false }, (err, user, info) => {
+      if (err) { return next(err); }
+      if (!user) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+      req.login(user, { session: false }, (loginErr) => {
+        if (loginErr) {
+          return next(loginErr);
+        }
+        return next();
+      });
+    })(req, res, next);
+  };
 
-app.post("/login", (req, res) =>{
-    console.log(req.body);
-    if(req.isAuthenticated()){ 
-        console.log("You are logged in");
-    }
-    else {
-        passport.authenticate("local", (err, user, info) => {
-            if (err) {
-                console.log(err);
-                res.status(401).json({ success: false, message: 'Invalid credentials' });
-                //
-            } else if (!user) {
-                //
-                console.log("Login failed!");
-                res.status(401).json({ success: false, message: "Invalid credentials" });
-            } else {
-                req.login(user, (err) => {
-                    if (err) {
-                        console.log(err);
-                        res.status(401).json({ success: false, message: "Invalid credentials" });
-                        //
-                    } else {
-                        //
-                        console.log("Logged in successfully!");
-                        res.json({ success: true, message: "Login successful" });
-                    }
-        
+app.route("/login")
+    .get( authenticateToken, (req, res) => {
+        res.json({ message: 'Sucess' });
+      })
+
+    .post((req, res) =>{
+        console.log(req.body);
+        if(req.isAuthenticated()){ 
+            console.log("You are logged in");
+        }
+        else {
+            passport.authenticate("local", (err, user, info) => {
+                if (err) {
+                    console.log(err);
+                    res.status(401).json({ success: false, message: 'Invalid credentials' });
+                    //
+                } else if (!user) {
+                    //
+                    console.log("Login failed!");
+                    res.status(401).json({ success: false, message: "Invalid credentials" });
+                } else {
+                    console.log("Authenticated!");
+                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
+                    console.log(user.id);
+                    res.json({token: `Bearer ${token}`,});
                     
-                });
-            }
-        })(req, res);
-    }
+                
+                }
+            })(req, res);
+        }
 
 })
 
 app.post("/register", async (req, res) => {
-        if(req.isAuthenticated()){
-            console.log("You are logged in");
-        } else {
+        
+        console.log(req.body);
+        try {
+            const newUser = await User.register(new User({ username: req.body.username }), req.body.password);
             console.log(req.body);
-            try {
-                const newUser = await User.register(new User({ username: req.body.username }), req.body.password);
-                await passport.authenticate("local")(req, res, () => {
-                    console.log("Sign Up Success");
-                    res.json({ success: true, message: "Sign up success" });
-                });
-            } catch (err) {
-                console.error(err);
-                if (err.name === "UserExistsError") {
-                    
-                    console.log("Username already exists. Please choose another username.");
+            passport.authenticate("local", (err, user, info) => {
+                if (err) {
+                    console.log(err);
+                    res.status(401).json({ success: false, message: 'Invalid credentials' });
+                    //
+                } else if (!user) {
+                    //
+                    console.log("Failed!");
                     res.status(401).json({ success: false, message: "Invalid credentials" });
-                }
+                } else {
+                    console.log("Authenticated!");
+                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
+                    console.log(user.id);
+                    res.json({token: `Bearer ${token}`,});
                 
+                }
+            })(req, res);
+        } catch (err) {
+            console.error(err);
+            if (err.name === "UserExistsError") {
+                
+                console.log("Username already exists. Please choose another username.");
+                res.json({error: "Username already exists. Please choose another username.",});
             }
+            
         }
+        
        
     });
 
 app.route("/logout")
     .get((req, res) => {
+        console.log(req.isAuthenticated());
         req.logout(function(err) {
             if (err) console.log(err);
             else {
@@ -125,7 +174,14 @@ app.route("/logout")
                 res.json({ success: true, message: 'Logout successful' });
             }
           });
+    });
+
+app.route("/home")
+    .get((req, res) => {
+        console.log(req.headers);
+
     })
+
 
 app.listen(process.env.PORT || 3001, () => {
     console.log("Server is running!")
