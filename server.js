@@ -14,6 +14,7 @@ import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
 
 
 
+
 const app = Express();
 app.use(bodyParser.urlencoded({extended:true}));
 app.use(bodyParser.json());
@@ -40,6 +41,16 @@ mongoose.connect("mongodb+srv://trantu1242003:TU1242kkk3@cluster0.6wvbq5t.mongod
 const userSchema = new mongoose.Schema({
     username: String,
     password: String,
+    firstName: String,
+    lastName:String,
+    avatarImageUrl: {
+        type: String,
+        default: "https://trantu1243.blob.core.windows.net/avatar/defaultAvatar.png",
+    },
+    backgroundImageUrl: {
+        type: String,
+        default: "https://trantu1243.blob.core.windows.net/background/defaultBackground.png"
+    }
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -55,9 +66,9 @@ const opts = {
     jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
     secretOrKey: process.env.SECRET_TOKEN,
 }
-passport.use(new JwtStrategy(opts, (jwt_payload, done) => {
+passport.use(new JwtStrategy(opts, async (jwt_payload, done) => {
   
-    const result = User.findById(jwt_payload.user.id); 
+    const result = await User.findById(jwt_payload.user.id); 
     if (result) {
         return done(null, result);
     } else {
@@ -94,6 +105,9 @@ const authenticateToken = (req, res, next) => {
       });
     })(req, res, next);
   };
+
+// Blob service client
+
 
 app.route("/login")
     .get( authenticateToken, (req, res) => {
@@ -132,7 +146,15 @@ app.post("/register", async (req, res) => {
         
         console.log(req.body);
         try {
-            const newUser = await User.register(new User({ username: req.body.username }), req.body.password);
+            const newUser = await User.register(
+                new User({ 
+                    username: req.body.username,
+                    firstName: req.body.firstName,
+                    lastName: req.body.lastName
+                }), 
+                req.body.password
+            );
+
             console.log(req.body);
             passport.authenticate("local", (err, user, info) => {
                 if (err) {
@@ -180,8 +202,13 @@ app.route("/home")
     .get((req, res) => {
         console.log(req.headers);
 
-    })
+    });
 
+app.route("/profile/:id")
+    .get(async(req, res) => {
+        const result = await User.findById(req.params.id);
+        res.json(result);
+    });
 
 app.listen(process.env.PORT || 3001, () => {
     console.log("Server is running!")
