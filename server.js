@@ -8,8 +8,10 @@ import 'dotenv/config';
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
-
-
+import { BlobServiceClient } from "@azure/storage-blob";
+import { v1 as uuidv1 } from "uuid";
+import multer from "multer";
+import fs from "fs";
 
 
 
@@ -50,7 +52,8 @@ const userSchema = new mongoose.Schema({
     backgroundImageUrl: {
         type: String,
         default: "https://trantu1243.blob.core.windows.net/background/defaultBackground.png"
-    }
+    },
+    image:[String],
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -90,6 +93,17 @@ passport.deserializeUser(function(user, cb) {
     });
 });
 
+
+// Blob service client
+const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
+if (!AZURE_STORAGE_CONNECTION_STRING) {
+    throw Error('Azure Storage Connection string not found');
+  }
+  // Create the BlobServiceClient object with connection string
+const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
+
+
+
 const authenticateToken = (req, res, next) => {
   
     passport.authenticate('jwt', { session: false }, (err, user, info) => {
@@ -106,12 +120,10 @@ const authenticateToken = (req, res, next) => {
     })(req, res, next);
   };
 
-// Blob service client
-
 
 app.route("/login")
     .get( authenticateToken, (req, res) => {
-        res.json({ message: 'Sucess' });
+        res.json({id:req.user.id});
       })
 
     .post((req, res) =>{
@@ -133,7 +145,7 @@ app.route("/login")
                     console.log("Authenticated!");
                     const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
                     console.log(user.id);
-                    res.json({token: `Bearer ${token}`,});
+                    res.json({token: token,});
                     
                 
                 }
@@ -169,7 +181,7 @@ app.post("/register", async (req, res) => {
                     console.log("Authenticated!");
                     const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
                     console.log(user.id);
-                    res.json({token: `Bearer ${token}`,});
+                    res.json({token: token,});
                 
                 }
             })(req, res);
@@ -209,6 +221,82 @@ app.route("/profile/:id")
         const result = await User.findById(req.params.id);
         res.json(result);
     });
+
+
+// upload avatar and background image
+const upload = multer({ dest: 'uploads/' });
+
+app.post("/upload/avatar", authenticateToken ,upload.single("avatar"), async (req, res) => {
+    try {
+        if (!req.file || !fs.existsSync(req.file.path)) {
+            return res.status(400).send('Invalid file');
+        }
+
+        const blobName = `avatar-${uuidv1()}`;
+        const stream = fs.createReadStream(req.file.path);
+        const size = req.file.size;
+        const containerClient = blobServiceClient.getContainerClient(process.env.AVATAR_CONTAINER_NAME);
+        const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+        const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
+            blobHTTPHeaders: { blobContentType: req.file.mimetype },
+        });
+        console.log(
+        `Blob was uploaded successfully. requestId: ${uploadBlobResponse.requestId}`
+        );
+      
+        const result = await User.findById(req.user.id);
+        if (result){
+            
+            result.avatarImageUrl = blockBlobClient.url;
+            await result.save();
+        }
+        else {console.log("not found")};
+        
+        fs.unlinkSync(req.file.path);
+
+        res.status(200).send('Image uploaded successfully');
+    } catch (error) {
+        console.error('Error uploading image to Azure Storage', error);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+app.post("/upload/background", authenticateToken ,upload.single("background"), async (req, res) => {
+    try {
+        if (!req.file || !fs.existsSync(req.file.path)) {
+            return res.status(400).send('Invalid file');
+        }
+
+        const blobName = `background-${uuidv1()}`;
+        const stream = fs.createReadStream(req.file.path);
+        const size = req.file.size;
+        const containerClient = blobServiceClient.getContainerClient(process.env.BACKGROUND_CONTAINER_NAME);
+        const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+        const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
+            blobHTTPHeaders: { blobContentType: req.file.mimetype },
+        });
+        console.log(
+        `Blob was uploaded successfully. requestId: ${uploadBlobResponse.requestId}`
+        );
+    
+        const result = await User.findById(req.user.id);
+        if (result){ 
+            result.backgroundImageUrl = blockBlobClient.url;
+            await result.save();
+        }
+        else {console.log("not found")};
+        
+        fs.unlinkSync(req.file.path);
+
+        res.status(200).send('Image uploaded successfully');
+    } catch (error) {
+        console.error('Error uploading image to Azure Storage', error);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
 
 app.listen(process.env.PORT || 3001, () => {
     console.log("Server is running!")
