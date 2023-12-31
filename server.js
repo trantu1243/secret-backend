@@ -27,7 +27,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE');
     res.header('Access-Control-Allow-Headers', 'Content-Type');
     next();
-  });
+});
 
 app.use(session({
     secret: process.env.SECRET_KEY, 
@@ -54,12 +54,63 @@ const userSchema = new mongoose.Schema({
         default: "https://trantu1243.blob.core.windows.net/background/defaultBackground.png"
     },
     image:[String],
+    yourPostId:[String],
+    yourSecretId:[String],
+    repostId:[String],
+    followerId:[String],
+    followingId:[String],
+    like:[String],
+    comment:[String],
+});
+
+const postSchema = new mongoose.Schema({
+    userId: String,
+    name: String,
+    avatarUser: String,
+    content: String,
+    postDate:{
+        type: Date,
+        default: Date.now,
+    },
+    interactDate:{
+        type: Date,
+        default: Date.now,
+    },
+    image:String,
+    like:[String],
+    comment:[String],
+    repost:[String],
+});
+
+const secretSchema = new mongoose.Schema({
+    content: String,
+    postDate:{
+        type: Date,
+        default: Date.now,
+    },
+    image:[String],
+    like:[String],
+    comment:[String],
+    repost:[String],
+});
+
+const commentSchema = new mongoose.Schema({
+    userId:String,
+    PostId: String,
+    commentId: String,
+    content:String,
+    commentDate:{
+        type: Date,
+        default: Date.now,
+    }
 });
 
 userSchema.plugin(passportLocalMongoose);
 
 const User = mongoose.model("User", userSchema);
-
+const Post = mongoose.model("post", postSchema);
+const Secret = mongoose.model("secret", secretSchema);
+const Comment = mongoose.model("comment", commentSchema);
 
 // passport-local
 passport.use(User.createStrategy());
@@ -107,24 +158,26 @@ const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_C
 const authenticateToken = (req, res, next) => {
   
     passport.authenticate('jwt', { session: false }, (err, user, info) => {
-      if (err) { return next(err); }
-      if (!user) {
-        return res.status(401).json({ message: 'Unauthorized' });
-      }
-      req.login(user, { session: false }, (loginErr) => {
-        if (loginErr) {
-          return next(loginErr);
+        if (err) { return next(err); }
+        if (!user) {
+            console.log("Login failed");
+            return res.status(401).json({ message: 'Unauthorized' });
         }
-        return next();
-      });
+        req.login(user, { session: false }, (loginErr) => {
+            if (loginErr) {
+                console.log("Login failed");
+                return next(loginErr);
+            }
+            return next();
+        });
     })(req, res, next);
   };
 
 
 app.route("/login")
     .get( authenticateToken, (req, res) => {
-        res.json({id:req.user.id});
-      })
+        res.json(req.user);
+    })
 
     .post((req, res) =>{
         console.log(req.body);
@@ -143,7 +196,7 @@ app.route("/login")
                     res.status(401).json({ success: false, message: "Invalid credentials" });
                 } else {
                     console.log("Authenticated!");
-                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
+                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '3h' });
                     console.log(user.id);
                     res.json({token: token,});
                     
@@ -179,7 +232,7 @@ app.post("/register", async (req, res) => {
                     res.status(401).json({ success: false, message: "Invalid credentials" });
                 } else {
                     console.log("Authenticated!");
-                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '1h' });
+                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '3d' });
                     console.log(user.id);
                     res.json({token: token,});
                 
@@ -218,8 +271,14 @@ app.route("/home")
 
 app.route("/profile/:id")
     .get(async(req, res) => {
-        const result = await User.findById(req.params.id);
-        res.json(result);
+        try{
+            const result = await User.findById(req.params.id);
+            res.json(result);
+        }
+        catch (e){
+            res.status(500).send(e);
+        }
+        
     });
 
 
@@ -241,9 +300,6 @@ app.post("/upload/avatar", authenticateToken ,upload.single("avatar"), async (re
         const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
             blobHTTPHeaders: { blobContentType: req.file.mimetype },
         });
-        console.log(
-        `Blob was uploaded successfully. requestId: ${uploadBlobResponse.requestId}`
-        );
       
         const result = await User.findById(req.user.id);
         if (result){
@@ -277,9 +333,6 @@ app.post("/upload/background", authenticateToken ,upload.single("background"), a
         const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
             blobHTTPHeaders: { blobContentType: req.file.mimetype },
         });
-        console.log(
-        `Blob was uploaded successfully. requestId: ${uploadBlobResponse.requestId}`
-        );
     
         const result = await User.findById(req.user.id);
         if (result){ 
@@ -297,7 +350,105 @@ app.post("/upload/background", authenticateToken ,upload.single("background"), a
     }
 });
 
+app.post("/upload/post", authenticateToken, upload.single("image"), async (req, res) =>{
+    try{
+       
+        const newPost = new Post({
+            userId: req.user._id,
+            name: `${req.user.firstName + " " + req.user.lastName}`,
+            avatarUser: req.user.avatarImageUrl,
 
-app.listen(process.env.PORT || 3001, () => {
-    console.log("Server is running!")
+        });
+
+
+        if(req.body.text){
+            newPost.content = req.body.text;
+        }
+        if (req.file && req.file.path){
+            const blobName = `post-image-${uuidv1()}`;
+            const stream = fs.createReadStream(req.file.path);
+            const size = req.file.size;
+            const containerClient = blobServiceClient.getContainerClient(process.env.POST_IMAGE_NAME);
+            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
+                blobHTTPHeaders: { blobContentType: req.file.mimetype },
+            });
+            if (uploadBlobResponse){
+                newPost.image = blockBlobClient.url;
+            }
+
+            fs.unlinkSync(req.file.path);
+        }
+
+        console.log(newPost);
+        newPost.save();
+
+        req.user.yourPostId.unshift(newPost._id);
+        req.user.save();
+
+        
+        res.status(200).send("post uploaded successfully!");
+
+    }
+    catch (e) {
+        console.error('Error uploading image to Azure Storage', e);
+        res.status(500).send('Internal Server Error');
+    }
+})
+
+app.route("/post/:id")
+    .get(async(req, res) => {
+        try{
+            const result = await Post.findById(req.params.id);
+            res.json(result);
+        }
+        catch (e){
+            res.status(500).send(e);
+            console.log(e);
+        }
+        
+    });
+
+app.post("/profile/follow", authenticateToken, async (req,res)=>{
+    try{
+        const user = await User.findById(req.body.id);
+        if (!user.followerId.includes(req.user._id)){
+            user.followerId.push(req.user._id);
+            user.save();
+
+            req.user.followingId.push(user._id);
+            req.user.save();
+        }
+        
+        
+        res.status(200).send("Follow successfully");
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send("Failed");
+    }
+});
+
+app.post("/profile/cancelFollow", authenticateToken, async (req,res)=>{
+    try{
+        const user = await User.findById(req.body.id);
+
+        user.followerId = user.followerId.filter(item => item !== String(req.user._id));
+        user.save();
+
+        req.user.followingId = req.user.followingId.filter(item => item !== String(user._id));
+        req.user.save();
+        res.status(200).send("Cancel follow successfully");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("Failed");
+    }
+});
+
+
+const port = process.env.PORT || 3001;
+app.listen(port, () => {
+    console.log(`Server running at http://localhost:${port}`);
 })
