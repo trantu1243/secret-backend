@@ -12,6 +12,7 @@ import { BlobServiceClient } from "@azure/storage-blob";
 import { v1 as uuidv1 } from "uuid";
 import multer from "multer";
 import fs from "fs";
+import { parse } from "path";
 
 
 
@@ -54,17 +55,17 @@ const userSchema = new mongoose.Schema({
         default: "https://trantu1243.blob.core.windows.net/background/defaultBackground.png"
     },
     image:[String],
-    yourPostId:[String],
-    yourSecretId:[String],
-    repostId:[String],
-    followerId:[String],
-    followingId:[String],
-    like:[String],
-    comment:[String],
+    yourPostId:[{type: mongoose.Schema.Types.ObjectId}],
+    yourSecretId:[{type: mongoose.Schema.Types.ObjectId}],
+    repostId:[{type: mongoose.Schema.Types.ObjectId}],
+    followerId:[{type: mongoose.Schema.Types.ObjectId}],
+    followingId:[{type: mongoose.Schema.Types.ObjectId}],
+    like:[{type: mongoose.Schema.Types.ObjectId}],
+    comment:[{type: mongoose.Schema.Types.ObjectId}],
 });
 
 const postSchema = new mongoose.Schema({
-    userId: String,
+    userId: {type: mongoose.Schema.Types.ObjectId},
     name: String,
     avatarUser: String,
     content: String,
@@ -77,9 +78,9 @@ const postSchema = new mongoose.Schema({
         default: Date.now,
     },
     image:String,
-    like:[String],
-    comment:[String],
-    repost:[String],
+    like:[{type: mongoose.Schema.Types.ObjectId}],
+    comment:[{type: mongoose.Schema.Types.ObjectId}],
+    repost:[{type: mongoose.Schema.Types.ObjectId}],
 });
 
 const secretSchema = new mongoose.Schema({
@@ -89,21 +90,25 @@ const secretSchema = new mongoose.Schema({
         default: Date.now,
     },
     image:[String],
-    like:[String],
-    comment:[String],
-    repost:[String],
+    like:[{type: mongoose.Schema.Types.ObjectId}],
+    comment:[{type: mongoose.Schema.Types.ObjectId}],
+    repost:[{type: mongoose.Schema.Types.ObjectId}],
 });
 
 const commentSchema = new mongoose.Schema({
-    userId:String,
-    PostId: String,
-    commentId: String,
+    userId:{type: mongoose.Schema.Types.ObjectId},
+    PostId: {type: mongoose.Schema.Types.ObjectId},
+    commentId: {type: mongoose.Schema.Types.ObjectId},
     content:String,
     commentDate:{
         type: Date,
         default: Date.now,
     }
 });
+
+userSchema.path("followingId").ref("User");
+userSchema.path("yourPostId").ref("Post");
+postSchema.path("userId").ref("User");
 
 userSchema.plugin(passportLocalMongoose);
 
@@ -281,7 +286,6 @@ app.route("/profile/:id")
         
     });
 
-
 // upload avatar and background image
 const upload = multer({ dest: 'uploads/' });
 
@@ -432,12 +436,13 @@ app.post("/profile/follow", authenticateToken, async (req,res)=>{
 
 app.post("/profile/cancelFollow", authenticateToken, async (req,res)=>{
     try{
+
         const user = await User.findById(req.body.id);
 
-        user.followerId = user.followerId.filter(item => item !== String(req.user._id));
+        user.followerId = user.followerId.filter(item => String(item) !== String(req.user._id));
         user.save();
 
-        req.user.followingId = req.user.followingId.filter(item => item !== String(user._id));
+        req.user.followingId = req.user.followingId.filter(item => String(item) !== String(user._id));
         req.user.save();
         res.status(200).send("Cancel follow successfully");
     }
@@ -447,6 +452,133 @@ app.post("/profile/cancelFollow", authenticateToken, async (req,res)=>{
     }
 });
 
+
+app.get("/getposts", authenticateToken, async (req, res) =>{
+    const skip = req.query.skip;
+    try{
+        const user = await User.findById(String(req.user._id));
+        if (user.followingId.length>0){
+            const result = await User.aggregate([
+                {
+                    $match: {_id:{$in: user.followingId}}
+                },
+                {
+                    $project:{
+                        yourPostId:1
+                    }
+                },
+                {
+                    $unwind:"$yourPostId"
+                },
+                {
+                    $group:{
+                        _id: null,
+                        combinedFollow:{$addToSet:"$yourPostId"}
+                    }
+                },
+                {
+                    $project:{
+                        _id:0,
+                        combinedFollow:1
+                    }
+                }
+                
+            ]);
+            const posts = await Post.aggregate([
+                {
+                    $match:{_id:{$in: result[0].combinedFollow}}
+                },
+                {
+                    $sort:{
+                        interactDate:-1,
+                    }
+                },
+                {
+                    $project:{
+                        _id:1,
+                    }
+                },
+                {
+                    $group:{
+                        _id: null,
+                        ids:{$addToSet:"$_id"}
+                    }
+                }
+            ]);
+            // console.log(posts[0].ids.slice(skip, skip+5));
+            if (posts.length > 0){
+                res.json({posts:posts[0].ids.slice(skip, skip+5)});
+            } else{
+                res.json({posts:[]});
+            }
+        } else {
+            res.json({posts:[]});
+        }
+        
+    }
+    catch(e){
+        console.log(e);
+        res.status(500);
+    }
+});
+
+app.get("/profilePosts", async (req,res)=>{
+    try{
+        const skip = req.query.skip;
+        const result = await User.findById(req.query.id);
+        const posts = result.yourPostId;
+        // console.log(posts.slice(skip, skip+5));
+        if (posts){
+            res.json({posts:posts.slice(skip, skip+5)})
+        }
+        else{
+            res.json({posts:[]});
+        }
+    }
+    catch(e){
+        console.log(e);
+        res.status(500);
+    }
+    
+});
+
+app.post("/post/like", authenticateToken, async(req, res)=>{
+    try{
+        const post = await Post.findById(req.body.id);
+        
+        if (!post.like.includes(req.user._id)){
+            post.like.unshift(req.user._id);
+            post.save();
+   
+
+            req.user.like.unshift(post._id);
+            req.user.save();
+        }
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+app.post("/post/unlike", authenticateToken, async(req, res)=>{
+    try{
+        const post = await Post.findById(req.body.id);
+        
+        post.like = post.like.filter(item => String(item) !== String(req.user._id));
+        post.save();
+   
+        req.user.like = req.user.like.filter(item => String(item) !== String(req.user._id));
+        req.user.save();
+        
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+})
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
