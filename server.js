@@ -97,8 +97,11 @@ const secretSchema = new mongoose.Schema({
 
 const commentSchema = new mongoose.Schema({
     userId:{type: mongoose.Schema.Types.ObjectId},
-    PostId: {type: mongoose.Schema.Types.ObjectId},
-    commentId: {type: mongoose.Schema.Types.ObjectId},
+    postId: {type: mongoose.Schema.Types.ObjectId},
+    name: String,
+    avatarImageUrl: String,
+    like: [{type: mongoose.Schema.Types.ObjectId}],
+    comment: [{type: mongoose.Schema.Types.ObjectId}],
     content:String,
     commentDate:{
         type: Date,
@@ -405,7 +408,9 @@ app.route("/post/:id")
     .get(async(req, res) => {
         try{
             const result = await Post.findById(req.params.id);
-            res.json(result);
+         
+            res.json(result); 
+            
         }
         catch (e){
             res.status(500).send(e);
@@ -542,7 +547,7 @@ app.get("/profilePosts", async (req,res)=>{
     
 });
 
-app.post("/post/like", authenticateToken, async(req, res)=>{
+app.patch("/post/like", authenticateToken, async(req, res)=>{
     try{
         const post = await Post.findById(req.body.id);
         
@@ -562,14 +567,14 @@ app.post("/post/like", authenticateToken, async(req, res)=>{
     }
 });
 
-app.post("/post/unlike", authenticateToken, async(req, res)=>{
+app.patch("/post/unlike", authenticateToken, async(req, res)=>{
     try{
         const post = await Post.findById(req.body.id);
         
         post.like = post.like.filter(item => String(item) !== String(req.user._id));
         post.save();
    
-        req.user.like = req.user.like.filter(item => String(item) !== String(req.user._id));
+        req.user.like = req.user.like.filter(item => String(item) !== String(post._id));
         req.user.save();
         
         res.status(200).send("success");
@@ -578,7 +583,146 @@ app.post("/post/unlike", authenticateToken, async(req, res)=>{
         console.log(e);
         res.status(500).send("failed");
     }
+});
+
+//get comments
+
+app.get("/post/comments/:id", async (req, res)=>{
+    try{
+        const result = await Post.findById(req.params.id);
+        res.status(200).json({commentId:result.comment});
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send(e);
+    }
 })
+
+// handle comment
+
+app.get("/comment/:id", async(req, res)=>{
+    try{
+        const result = await Comment.findById(req.params.id);
+        res.json(result);
+        
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send(e);
+    }
+});
+
+app.post("/comment", authenticateToken, async(req, res)=>{
+    try{
+        console.log(req.body);
+        const post = await Post.findById(req.body.postId);
+        const newComment = new Comment({
+            postId: post._id,
+            userId: req.user._id,
+            name: `${req.user.firstName + " " + req.user.lastName}`,
+            avatarImageUrl: req.user.avatarImageUrl,
+            content: req.body.text,
+        });
+        newComment.save();
+        console.log(newComment);
+
+        post.comment.unshift(newComment._id);
+        post.save();
+
+        req.user.comment.unshift(newComment._id);
+        req.user.save();
+
+        res.status(200).send("success");
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send(e);
+    }
+});
+
+// like and unlike comment
+
+app.patch("/comment/like", authenticateToken, async(req, res)=>{
+    try{
+        const comment = await Comment.findById(req.body.id);
+        
+        if (!comment.like.includes(req.user._id)){
+            comment.like.unshift(req.user._id);
+            comment.save();
+   
+
+            req.user.like.unshift(comment._id);
+            req.user.save();
+        }
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+app.patch("/comment/unlike", authenticateToken, async(req, res)=>{
+    try{
+        const comment = await Comment.findById(req.body.id);
+        
+        comment.like = comment.like.filter(item => String(item) !== String(req.user._id));
+        comment.save();
+   
+        req.user.like = req.user.like.filter(item => String(item) !== String(comment._id));
+        req.user.save();
+        
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+
+// handle repost
+
+app.patch("/post/repost", authenticateToken, async(req, res)=>{
+    try{
+        const post = await Post.findById(req.body.id);
+        
+        if (!post.repost.includes(req.user._id)){
+            post.repost.unshift(req.user._id);
+            post.save();
+   
+
+            req.user.repostId.unshift(post._id);
+            req.user.yourPostId.unshift(post._id);
+            req.user.save();
+        }
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+app.patch("/post/unrepost", authenticateToken, async(req, res)=>{
+    try{
+        const post = await Post.findById(req.body.id);
+        
+        post.repost = post.repost.filter(item => String(item) !== String(req.user._id));
+        post.save();
+   
+        req.user.repostId = req.user.repostId.filter(item => String(item) !== String(post._id));
+        req.user.yourPostId = req.user.yourPostId.filter(item => String(item) !== String(post._id));
+        req.user.save();
+        
+        res.status(200).send("success");
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
