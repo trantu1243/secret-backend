@@ -388,14 +388,14 @@ app.post("/upload/post", authenticateToken, upload.single("image"), async (req, 
             fs.unlinkSync(req.file.path);
         }
 
-        console.log(newPost);
+        
         newPost.save();
 
         req.user.yourPostId.unshift(newPost._id);
         req.user.save();
 
         
-        res.status(200).send("post uploaded successfully!");
+        res.status(200).json({postId:newPost._id});
 
     }
     catch (e) {
@@ -459,7 +459,7 @@ app.post("/profile/cancelFollow", authenticateToken, async (req,res)=>{
 
 
 app.get("/getposts", authenticateToken, async (req, res) =>{
-    const skip = req.query.skip;
+    const skip = parseInt(req.query.skip, 10);
     try{
         const user = await User.findById(String(req.user._id));
         if (user.followingId.length>0){
@@ -478,7 +478,7 @@ app.get("/getposts", authenticateToken, async (req, res) =>{
                 {
                     $group:{
                         _id: null,
-                        combinedFollow:{$addToSet:"$yourPostId"}
+                        combinedFollow:{$push:"$yourPostId"}
                     }
                 },
                 {
@@ -489,6 +489,8 @@ app.get("/getposts", authenticateToken, async (req, res) =>{
                 }
                 
             ]);
+
+            
             const posts = await Post.aggregate([
                 {
                     $match:{_id:{$in: result[0].combinedFollow}}
@@ -501,16 +503,17 @@ app.get("/getposts", authenticateToken, async (req, res) =>{
                 {
                     $project:{
                         _id:1,
+                   
                     }
                 },
                 {
                     $group:{
                         _id: null,
-                        ids:{$addToSet:"$_id"}
+                        ids:{$push:"$_id"}
                     }
                 }
             ]);
-            // console.log(posts[0].ids.slice(skip, skip+5));
+        
             if (posts.length > 0){
                 res.json({posts:posts[0].ids.slice(skip, skip+5)});
             } else{
@@ -529,12 +532,13 @@ app.get("/getposts", authenticateToken, async (req, res) =>{
 
 app.get("/profilePosts", async (req,res)=>{
     try{
-        const skip = req.query.skip;
+        const skip = parseInt(req.query.skip, 10);
         const result = await User.findById(req.query.id);
         const posts = result.yourPostId;
         // console.log(posts.slice(skip, skip+5));
         if (posts){
-            res.json({posts:posts.slice(skip, skip+5)})
+            
+            res.json({posts:posts.slice(skip, skip+5)});
         }
         else{
             res.json({posts:[]});
@@ -614,7 +618,7 @@ app.get("/comment/:id", async(req, res)=>{
 
 app.post("/comment", authenticateToken, async(req, res)=>{
     try{
-        console.log(req.body);
+
         const post = await Post.findById(req.body.postId);
         const newComment = new Comment({
             postId: post._id,
@@ -624,7 +628,7 @@ app.post("/comment", authenticateToken, async(req, res)=>{
             content: req.body.text,
         });
         newComment.save();
-        console.log(newComment);
+  
 
         post.comment.unshift(newComment._id);
         post.save();
@@ -723,6 +727,108 @@ app.patch("/post/unrepost", authenticateToken, async(req, res)=>{
     }
 });
 
+app.patch("/edit/post", authenticateToken, upload.single("image"), async (req, res)=>{
+    try{
+        const post = await Post.findById(req.body.postId);
+    
+        if (req.body.text) {
+            post.content = req.body.text;
+        }
+        else {
+            post.content ="";
+        }
+        if (req.file && req.file.path){
+            const blobName = `post-image-${uuidv1()}`;
+            const stream = fs.createReadStream(req.file.path);
+            const size = req.file.size;
+            const containerClient = blobServiceClient.getContainerClient(process.env.POST_IMAGE_NAME);
+            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
+                blobHTTPHeaders: { blobContentType: req.file.mimetype },
+            });
+            if (uploadBlobResponse){
+                post.image = blockBlobClient.url;
+            }
+
+            fs.unlinkSync(req.file.path);
+        }
+
+        post.save();
+
+        res.status(200).send("edit successfully!");
+
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+// delete post
+
+app.put("/delete/post", authenticateToken, async (req, res) => {
+    try{
+        console.log(req.body);
+
+        req.user.yourPostId = req.user.yourPostId.filter(item => String(item) !== req.body.id);
+        req.user.save();
+        
+        await Post.findByIdAndDelete(req.body.id).then(() => {
+            console.log("success");
+            res.status(200).send("Delete successfully");
+        }).catch(e => {
+            console.log(e);
+            res.status(500).send('Internal Server Error');
+        });
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+// edit comment
+
+app.patch("/edit/comment", authenticateToken, async(req, res)=>{
+    try{
+        const comment = await Comment.findById(req.body.commentId);
+        comment.content = req.body.text;
+        comment.save();
+
+        res.status(200).send("Success");
+    }
+    catch (e) {
+        console.log(e);
+        res.status(500).send(e);
+    }
+});
+
+// delete comment
+app.put("/delete/comment", authenticateToken, async (req, res)=>{
+    try{
+        console.log(req.body);
+        req.user.comment = req.user.comment.filter((item)=>(String(item)!==req.body.commentId));
+        req.user.save();
+
+        const post = await Post.findById(req.body.postId);
+        post.comment = post.comment.filter((item)=>(String(item)!==req.body.commentId));
+        post.save();
+
+        await Comment.findByIdAndDelete(req.body.commentId).then(() => {
+            console.log("success");
+            res.status(200).send("Delete successfully");
+        }).catch(e => {
+            console.log(e);
+            res.status(500).send('Internal Server Error');
+        });
+        
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send('Internal Server Error');
+    }
+})
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
