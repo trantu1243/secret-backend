@@ -3,7 +3,7 @@ import bodyParser from "body-parser";
 import mongoose from "mongoose";
 import passport from "passport";
 import passportLocalMongoose from "passport-local-mongoose"
-import session from "express-session";
+// import session from "express-session";
 import 'dotenv/config';
 import cors from "cors";
 import jwt from "jsonwebtoken";
@@ -12,7 +12,7 @@ import { BlobServiceClient } from "@azure/storage-blob";
 import { v1 as uuidv1 } from "uuid";
 import multer from "multer";
 import fs from "fs";
-import { parse } from "path";
+
 
 
 
@@ -30,14 +30,14 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(session({
-    secret: process.env.SECRET_KEY, 
-    resave: false,
-    saveUninitialized: true,
-  }));
+// app.use(session({
+//     secret: process.env.SECRET_KEY, 
+//     resave: false,
+//     saveUninitialized: true,
+//   }));
 
 app.use(passport.initialize());
-app.use(passport.session());
+// app.use(passport.session());
 
 mongoose.connect("mongodb+srv://trantu1242003:TU1242kkk3@cluster0.6wvbq5t.mongodb.net/SecretApp?retryWrites=true&w=majority");
 
@@ -46,6 +46,7 @@ const userSchema = new mongoose.Schema({
     password: String,
     firstName: String,
     lastName:String,
+    name: String,
     avatarImageUrl: {
         type: String,
         default: "https://trantu1243.blob.core.windows.net/avatar/defaultAvatar.png",
@@ -140,11 +141,17 @@ passport.use(new JwtStrategy(opts, async (jwt_payload, done) => {
   }));
 
 
+// passport.serializeUser(function(user, cb) {
+//     process.nextTick(function() {
+//       cb(null, { id: user.id, username: user.username });
+//     });
+//   });
+
 passport.serializeUser(function(user, cb) {
-    process.nextTick(function() {
-      cb(null, { id: user.id, username: user.username });
-    });
+  process.nextTick(function() {
+    cb(null, user.id);
   });
+});
   
 passport.deserializeUser(function(user, cb) {
     process.nextTick(function() {
@@ -193,7 +200,7 @@ app.route("/login")
             console.log("You are logged in");
         }
         else {
-            passport.authenticate("local", (err, user, info) => {
+            passport.authenticate("local", { session: false },(err, user, info) => {
                 if (err) {
                     console.log(err);
                     res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -223,13 +230,14 @@ app.post("/register", async (req, res) => {
                 new User({ 
                     username: req.body.username,
                     firstName: req.body.firstName,
-                    lastName: req.body.lastName
+                    lastName: req.body.lastName,
+                    name: `${req.body.firstName + " " + req.body.lastName}`,
                 }), 
                 req.body.password
             );
 
             console.log(req.body);
-            passport.authenticate("local", (err, user, info) => {
+            passport.authenticate("local", { session: false },(err, user, info) => {
                 if (err) {
                     console.log(err);
                     res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -261,14 +269,14 @@ app.post("/register", async (req, res) => {
 
 app.route("/logout")
     .get((req, res) => {
-        console.log(req.isAuthenticated());
-        req.logout(function(err) {
-            if (err) console.log(err);
-            else {
-                console.log("Log out successfully");
+        // console.log(req.isAuthenticated());
+        // req.logout(function(err) {
+        //     if (err) console.log(err);
+        //     else {
+        //         console.log("Log out successfully");
                 res.json({ success: true, message: 'Logout successful' });
-            }
-          });
+        //     }
+        //   });
     });
 
 app.route("/home")
@@ -828,7 +836,68 @@ app.put("/delete/comment", authenticateToken, async (req, res)=>{
         console.log(e);
         res.status(500).send('Internal Server Error');
     }
-})
+});
+
+// get user list
+
+app.get("/userList", authenticateToken, async (req, res) => {
+    try{
+        const result = await User.aggregate([
+            {
+                $match:{
+                    $and:[
+                        {_id:{$in: req.user.followingId}},
+                        {_id:{$in: req.user.followerId}},
+                    ]
+                }
+            },
+            {
+                $project:{
+                    _id:1,
+                    firstName:1,
+                    lastName:1,
+                    avatarImageUrl:1,
+                }
+            }   
+        ]);
+        
+        res.json({userList:result});
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+app.get("/search/user", async (req, res)=>{
+    try{
+        const result = await User.aggregate([
+            {
+                $match:{
+                    $or:[
+                        { firstName: { $regex: new RegExp(req.query.name, 'i') } },
+                        { lastName: { $regex: new RegExp(req.query.name, 'i') } },
+                        { name: { $regex: new RegExp(req.query.name, 'i') } }
+                    ]
+                },
+            },
+            {
+                $project:{
+                    _id:1,
+                    firstName:1,
+                    lastName:1,
+                    avatarImageUrl:1,
+                }
+            }
+        ]);
+        res.json({userList:result});
+    }
+    catch(e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
