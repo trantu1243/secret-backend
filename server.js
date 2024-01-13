@@ -3,7 +3,6 @@ import bodyParser from "body-parser";
 import mongoose from "mongoose";
 import passport from "passport";
 import passportLocalMongoose from "passport-local-mongoose"
-// import session from "express-session";
 import 'dotenv/config';
 import cors from "cors";
 import jwt from "jsonwebtoken";
@@ -12,13 +11,14 @@ import { BlobServiceClient } from "@azure/storage-blob";
 import { v1 as uuidv1 } from "uuid";
 import multer from "multer";
 import fs from "fs";
-
-
-
-
+import http from "http";
+import {Server} from "socket.io";
 
 
 const app = Express();
+const sever = http.createServer(app);
+const io = new Server(sever);
+
 app.use(bodyParser.urlencoded({extended:true}));
 app.use(bodyParser.json());
 
@@ -30,14 +30,8 @@ app.use((req, res, next) => {
     next();
 });
 
-// app.use(session({
-//     secret: process.env.SECRET_KEY, 
-//     resave: false,
-//     saveUninitialized: true,
-//   }));
 
 app.use(passport.initialize());
-// app.use(passport.session());
 
 mongoose.connect("mongodb+srv://trantu1242003:TU1242kkk3@cluster0.6wvbq5t.mongodb.net/SecretApp?retryWrites=true&w=majority");
 
@@ -63,6 +57,17 @@ const userSchema = new mongoose.Schema({
     followingId:[{type: mongoose.Schema.Types.ObjectId}],
     like:[{type: mongoose.Schema.Types.ObjectId}],
     comment:[{type: mongoose.Schema.Types.ObjectId}],
+    notification:[{
+        postId: {type:mongoose.Schema.Types.ObjectId},
+        name: String,
+        content: String,
+        avatarImageUrl: String,
+        date: {type:Date},
+    }],
+    checkNotification:{
+        type: Number,
+        default:0,
+    }
 });
 
 const postSchema = new mongoose.Schema({
@@ -82,9 +87,12 @@ const postSchema = new mongoose.Schema({
     like:[{type: mongoose.Schema.Types.ObjectId}],
     comment:[{type: mongoose.Schema.Types.ObjectId}],
     repost:[{type: mongoose.Schema.Types.ObjectId}],
+    secret:{type:Boolean, default:false},
 });
 
 const secretSchema = new mongoose.Schema({
+    name:{type:String, default:"Anonymous user"},
+    avatarUser:{type: String, default:"https://trantu1243.blob.core.windows.net/loadimage-11ee-814b-45e4577e52de/Screenshot 2024-01-13 225329.png"},
     content: String,
     postDate:{
         type: Date,
@@ -141,12 +149,6 @@ passport.use(new JwtStrategy(opts, async (jwt_payload, done) => {
   }));
 
 
-// passport.serializeUser(function(user, cb) {
-//     process.nextTick(function() {
-//       cb(null, { id: user.id, username: user.username });
-//     });
-//   });
-
 passport.serializeUser(function(user, cb) {
   process.nextTick(function() {
     cb(null, user.id);
@@ -168,6 +170,17 @@ if (!AZURE_STORAGE_CONNECTION_STRING) {
   // Create the BlobServiceClient object with connection string
 const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
 
+
+// socket
+
+io.on('connection', (socket) => {
+    console.log('Client connected');
+  
+    // handle disconnect event
+    socket.on('disconnect', () => {
+      console.log('Client disconnected');
+    });
+});
 
 
 const authenticateToken = (req, res, next) => {
@@ -191,7 +204,24 @@ const authenticateToken = (req, res, next) => {
 
 app.route("/login")
     .get( authenticateToken, (req, res) => {
-        res.json(req.user);
+        res.json({
+            _id: req.user._id,
+            firstName: req.user.firstName,
+            lastName: req.user.lastName,
+            name: req.user.name,
+            avatarImageUrl: req.user.avatarImageUrl,
+            backgroundImageUrl: req.user.backgroundImageUrl,
+            image: req.user.image,
+            yourPostId: req.user.yourPostId,
+            yourSecretId: req.user.yourSecretId,
+            repostId: req.user.repostId,
+            followerId: req.user.followerId,
+            followingId: req.user.followingId,
+            like: req.user.like,
+            comment: req.user.comment,
+            notification: req.user.notification,
+            checkNotification: req.user.checkNotification,
+        });
     })
 
     .post((req, res) =>{
@@ -267,17 +297,6 @@ app.post("/register", async (req, res) => {
        
     });
 
-app.route("/logout")
-    .get((req, res) => {
-        // console.log(req.isAuthenticated());
-        // req.logout(function(err) {
-        //     if (err) console.log(err);
-        //     else {
-        //         console.log("Log out successfully");
-                res.json({ success: true, message: 'Logout successful' });
-        //     }
-        //   });
-    });
 
 app.route("/home")
     .get((req, res) => {
@@ -289,7 +308,21 @@ app.route("/profile/:id")
     .get(async(req, res) => {
         try{
             const result = await User.findById(req.params.id);
-            res.json(result);
+            res.json({
+                _id: result._id,
+                firstName: result.firstName,
+                lastName: result.lastName,
+                name: result.name,
+                avatarImageUrl: result.avatarImageUrl,
+                backgroundImageUrl: result.backgroundImageUrl,
+                image: result.image,
+                yourPostId: result.yourPostId,
+                repostId: result.repostId,
+                followerId: result.followerId,
+                followingId: result.followingId,
+                like: result.like,
+                comment: result.comment,
+            });
         }
         catch (e){
             res.status(500).send(e);
@@ -365,6 +398,7 @@ app.post("/upload/background", authenticateToken ,upload.single("background"), a
     }
 });
 
+
 app.post("/upload/post", authenticateToken, upload.single("image"), async (req, res) =>{
     try{
        
@@ -396,14 +430,74 @@ app.post("/upload/post", authenticateToken, upload.single("image"), async (req, 
             fs.unlinkSync(req.file.path);
         }
 
-        
         newPost.save();
 
         req.user.yourPostId.unshift(newPost._id);
         req.user.save();
 
+        res.status(200).json({postId:String(newPost._id)});
+
+        req.user.followerId.map(async (objId)=>{
+            const user = await User.findById(String(objId));
+            user.notification.unshift({
+                postId: newPost._id,
+                name: req.user.name,
+                content:" posted one post",
+                avatarImageUrl: req.user.avatarImageUrl,
+                date: Date.now(),
+            });
+            
+            user.checkNotification++;
+            user.save();
+        });
         
-        res.status(200).json({postId:newPost._id});
+  
+    }
+    catch (e) {
+        console.error('Error uploading image to Azure Storage', e);
+        res.status(500).send('Internal Server Error');
+    }
+});
+
+// upload secret
+
+app.post("/upload/secret", authenticateToken, upload.single("image"), async (req, res) =>{
+    try{
+       
+        const newPost = new Post({
+            userId: req.user._id,
+            name: "Anonymous user",
+            avatarUser: "https://trantu1243.blob.core.windows.net/secret-11ee-814b-45e4577e52de/Screenshot-2024-01-13-225329.png",
+            secret: true,
+        });
+
+        if(req.body.text){
+            newPost.content = req.body.text;
+        }
+        if (req.file && req.file.path){
+            const blobName = `post-image-${uuidv1()}`;
+            const stream = fs.createReadStream(req.file.path);
+            const size = req.file.size;
+            const containerClient = blobServiceClient.getContainerClient(process.env.SECRET_IMAGE_NAME);
+            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
+                blobHTTPHeaders: { blobContentType: req.file.mimetype },
+            });
+            if (uploadBlobResponse){
+                newPost.image = blockBlobClient.url;
+            }
+
+            fs.unlinkSync(req.file.path);
+        }
+
+        newPost.save();
+        console.log(newPost);
+
+        req.user.yourSecretId.unshift(newPost._id);
+        req.user.save();
+
+        res.status(200).json({postId:String(newPost._id)});
 
     }
     catch (e) {
@@ -416,8 +510,20 @@ app.route("/post/:id")
     .get(async(req, res) => {
         try{
             const result = await Post.findById(req.params.id);
-         
-            res.json(result); 
+            if (!result.secret) res.json(result);
+            else res.json({
+                _id: result._id,
+                name: result.name,
+                avatarUser: result.avatarUser,
+                content: result.content,
+                postDate: result.postDate,
+                interactDate: result.interactDate,
+                image: result.image,
+                like: result.like,
+                comment: result.comment,
+                repost: result.repost,
+                secret: result.secret,
+            });
             
         }
         catch (e){
@@ -538,11 +644,105 @@ app.get("/getposts", authenticateToken, async (req, res) =>{
     }
 });
 
+app.get("/getSecret", authenticateToken, async (req, res) =>{
+    const skip = parseInt(req.query.skip, 10);
+    try{
+            
+        const posts = await Post.aggregate([
+            {
+                $match:{
+                    $and:[
+                        {userId:{$ne: req.user._id}},
+                        {secret:true}
+                    ]}
+            },
+            {
+                $sort:{
+                    interactDate:-1,
+                }
+            },
+            {
+                $project:{
+                    _id:1,
+                }
+            },
+            {
+                $group:{
+                    _id: null,
+                    ids:{$push:"$_id"}
+                }
+            }
+        ]);
+
+    
+        if (posts.length > 0){
+            res.json({posts:posts[0].ids.slice(skip, skip+5)});
+        } else{
+            res.json({posts:[]});
+        }
+       
+        
+    }
+    catch(e){
+        console.log(e);
+        res.status(500);
+    }
+});
+
+
 app.get("/profilePosts", async (req,res)=>{
     try{
         const skip = parseInt(req.query.skip, 10);
         const result = await User.findById(req.query.id);
         const posts = result.yourPostId;
+        // console.log(posts.slice(skip, skip+5));
+        if (posts){
+            
+            res.json({posts:posts.slice(skip, skip+5)});
+        }
+        else{
+            res.json({posts:[]});
+        }
+    }
+    catch(e){
+        console.log(e);
+        res.status(500);
+    }
+    
+});
+
+app.get("/yourSecret", authenticateToken, async (req,res)=>{
+    try{
+        const skip = parseInt(req.query.skip, 10);
+        if (req.user.yourSecretId){
+            const posts = req.user.yourSecretId;
+        
+            if (posts){
+                
+                res.json({posts:posts.slice(skip, skip+5)});
+            }
+            else{
+                res.json({posts:[]});
+            }
+        } else {
+            res.json({posts:[]});
+        }
+        
+    }
+    catch(e){
+        console.log(e);
+        res.status(500);
+    }
+    
+});
+
+// get liked post
+
+app.get("/profileLikedPosts", async (req,res)=>{
+    try{
+        const skip = parseInt(req.query.skip, 10);
+        const result = await User.findById(req.query.id);
+        const posts = result.like;
         // console.log(posts.slice(skip, skip+5));
         if (posts){
             
@@ -602,7 +802,12 @@ app.patch("/post/unlike", authenticateToken, async(req, res)=>{
 app.get("/post/comments/:id", async (req, res)=>{
     try{
         const result = await Post.findById(req.params.id);
-        res.status(200).json({commentId:result.comment});
+        if (result.comment) {
+            res.status(200).json({commentId:result.comment});
+        } else {
+            res.status(200).json({commentId:[]});
+        }
+        
     }
     catch(e){
         console.log(e);
@@ -645,6 +850,19 @@ app.post("/comment", authenticateToken, async(req, res)=>{
         req.user.save();
 
         res.status(200).send("success");
+
+        const user = await User.findById(String(post.userId));
+        user.notification.unshift({
+            postId: post._id,
+            name: req.user.name,
+            content:" commented in your post",
+            avatarImageUrl: req.user.avatarImageUrl,
+            date: Date.now(),
+        });
+
+       
+        user.checkNotification++;
+        user.save();
     }
     catch (e){
         console.log(e);
@@ -898,8 +1116,29 @@ app.get("/search/user", async (req, res)=>{
     }
 });
 
+app.patch("/notification", authenticateToken, (req, res)=>{
+    try{
+        req.user.checkNotification = 0;
+        req.user.save();
+        res.send("Success");
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
+
+app.get("/notification", authenticateToken, (req, res)=>{
+    try{
+        res.json(req.user.checkNotification);
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+});
 
 const port = process.env.PORT || 3001;
-app.listen(port, () => {
+sever.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 })
