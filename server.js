@@ -13,6 +13,7 @@ import fs from "fs";
 import http from "http";
 import {Server} from "socket.io";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import https from "https";
 
 const app = Express();
 const sever = http.createServer(app);
@@ -1158,7 +1159,22 @@ app.patch("/editprofile", authenticateToken, async (req, res)=>{
 
 });
 
+app.get("/test", (req, res)=>{
+    res.send("Ok");
+});
+
 const port = process.env.PORT || 3001;
 sever.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 })
+
+const options = {
+    key: fs.readFileSync("key.pem"),
+    cert: fs.readFileSync("cert.pem"),
+};
+
+const PORT = process.env.PORT || 443;
+
+https.createServer(options, app).listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
