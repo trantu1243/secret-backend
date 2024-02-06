@@ -7,13 +7,12 @@ import 'dotenv/config';
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
-import { BlobServiceClient } from "@azure/storage-blob";
 import { v1 as uuidv1 } from "uuid";
 import multer from "multer";
 import fs from "fs";
 import http from "http";
 import {Server} from "socket.io";
-
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 const app = Express();
 const sever = http.createServer(app);
@@ -43,11 +42,11 @@ const userSchema = new mongoose.Schema({
     name: String,
     avatarImageUrl: {
         type: String,
-        default: "https://trantu1243.blob.core.windows.net/avatar/defaultAvatar.png",
+        default: "https://trantu-secret.s3.ap-southeast-2.amazonaws.com/0ce956b2-9787-4756-a580-299568810730.png",
     },
     backgroundImageUrl: {
         type: String,
-        default: "https://trantu1243.blob.core.windows.net/background/defaultBackground.png"
+        default: "https://trantu-secret.s3.ap-southeast-2.amazonaws.com/defaultBackground.png"
     },
     image:[String],
     yourPostId:[{type: mongoose.Schema.Types.ObjectId}],
@@ -92,7 +91,7 @@ const postSchema = new mongoose.Schema({
 
 const secretSchema = new mongoose.Schema({
     name:{type:String, default:"Anonymous user"},
-    avatarUser:{type: String, default:"https://trantu1243.blob.core.windows.net/loadimage-11ee-814b-45e4577e52de/Screenshot 2024-01-13 225329.png"},
+    avatarUser:{type: String, default:"https://trantu-secret.s3.ap-southeast-2.amazonaws.com/4123763.png"},
     content: String,
     postDate:{
         type: Date,
@@ -162,13 +161,16 @@ passport.deserializeUser(function(user, cb) {
 });
 
 
-// Blob service client
-const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
-if (!AZURE_STORAGE_CONNECTION_STRING) {
-    throw Error('Azure Storage Connection string not found');
-  }
-  // Create the BlobServiceClient object with connection string
-const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
+// AWS S3 bucket
+
+
+const s3Client = new S3Client({
+    region: process.env.YOUR_S3_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    }
+});
 
 
 // socket
@@ -188,7 +190,6 @@ const authenticateToken = (req, res, next) => {
     passport.authenticate('jwt', { session: false }, (err, user, info) => {
         if (err) { return next(err); }
         if (!user) {
-            console.log("Login failed");
             return res.status(401).json({ message: 'Unauthorized' });
         }
         req.login(user, { session: false }, (loginErr) => {
@@ -199,29 +200,12 @@ const authenticateToken = (req, res, next) => {
             return next();
         });
     })(req, res, next);
-  };
+};
 
 
 app.route("/login")
     .get( authenticateToken, (req, res) => {
-        res.json({
-            _id: req.user._id,
-            firstName: req.user.firstName,
-            lastName: req.user.lastName,
-            name: req.user.name,
-            avatarImageUrl: req.user.avatarImageUrl,
-            backgroundImageUrl: req.user.backgroundImageUrl,
-            image: req.user.image,
-            yourPostId: req.user.yourPostId,
-            yourSecretId: req.user.yourSecretId,
-            repostId: req.user.repostId,
-            followerId: req.user.followerId,
-            followingId: req.user.followingId,
-            like: req.user.like,
-            comment: req.user.comment,
-            notification: req.user.notification,
-            checkNotification: req.user.checkNotification,
-        });
+        res.json(req.user);
     })
 
     .post((req, res) =>{
@@ -240,12 +224,10 @@ app.route("/login")
                     console.log("Login failed!");
                     res.status(401).json({ success: false, message: "Invalid credentials" });
                 } else {
-                    console.log("Authenticated!");
                     const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '3h' });
-                    console.log(user.id);
+                 
                     res.json({token: token,});
                     
-                
                 }
             })(req, res);
         }
@@ -266,7 +248,7 @@ app.post("/register", async (req, res) => {
                 req.body.password
             );
 
-            console.log(req.body);
+
             passport.authenticate("local", { session: false },(err, user, info) => {
                 if (err) {
                     console.log(err);
@@ -277,9 +259,7 @@ app.post("/register", async (req, res) => {
                     console.log("Failed!");
                     res.status(401).json({ success: false, message: "Invalid credentials" });
                 } else {
-                    console.log("Authenticated!");
-                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '3d' });
-                    console.log(user.id);
+                    const token = jwt.sign({ user: {id:user._id} }, process.env.SECRET_TOKEN, { expiresIn: '3d' });            
                     res.json({token: token,});
                 
                 }
@@ -297,12 +277,6 @@ app.post("/register", async (req, res) => {
        
     });
 
-
-app.route("/home")
-    .get((req, res) => {
-        console.log(req.headers);
-
-    });
 
 app.route("/profile/:id")
     .get(async(req, res) => {
@@ -338,28 +312,49 @@ app.post("/upload/avatar", authenticateToken ,upload.single("avatar"), async (re
         if (!req.file || !fs.existsSync(req.file.path)) {
             return res.status(400).send('Invalid file');
         }
-
-        const blobName = `avatar-${uuidv1()}`;
-        const stream = fs.createReadStream(req.file.path);
-        const size = req.file.size;
-        const containerClient = blobServiceClient.getContainerClient(process.env.AVATAR_CONTAINER_NAME);
-        const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-
-        const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
-            blobHTTPHeaders: { blobContentType: req.file.mimetype },
-        });
       
+        const fileContent = fs.readFileSync(req.file.path);
+
+        const params = {
+            Bucket: process.env.BUCKET_NAME,
+            Key: `avatar-${uuidv1() + req.file.originalname}`,
+            Body: fileContent,
+            ContentType: req.file.mimetype,
+        };
+
+        const command = new PutObjectCommand(params);
+
+        const response = await s3Client.send(command);
+
+        const imageUrl = `https://${params.Bucket}.s3.${await s3Client.config.region()}.amazonaws.com/${params.Key}`;
+
+
         const result = await User.findById(req.user.id);
         if (result){
             
-            result.avatarImageUrl = blockBlobClient.url;
+            result.avatarImageUrl = imageUrl;
             await result.save();
+
+            res.status(200).send('Image uploaded successfully');
+
+            result.yourPostId.forEach(async id => {
+                const post = await Post.findById(String(id));
+                if (String(post.userId) === String(result._id)){
+                    post.avatarUser = result.avatarImageUrl;
+                    await post.save();
+                }     
+            });
+            result.comment.forEach(async id =>{
+                const cmt = await Comment.findById(String(id));
+                cmt.avatarImageUrl = result.avatarImageUrl;
+                await cmt.save();
+            })
         }
         else {console.log("not found")};
         
         fs.unlinkSync(req.file.path);
 
-        res.status(200).send('Image uploaded successfully');
+        
     } catch (error) {
         console.error('Error uploading image to Azure Storage', error);
         res.status(500).send('Internal Server Error');
@@ -371,20 +366,26 @@ app.post("/upload/background", authenticateToken ,upload.single("background"), a
         if (!req.file || !fs.existsSync(req.file.path)) {
             return res.status(400).send('Invalid file');
         }
-
-        const blobName = `background-${uuidv1()}`;
-        const stream = fs.createReadStream(req.file.path);
-        const size = req.file.size;
-        const containerClient = blobServiceClient.getContainerClient(process.env.BACKGROUND_CONTAINER_NAME);
-        const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-
-        const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
-            blobHTTPHeaders: { blobContentType: req.file.mimetype },
-        });
     
+        const fileContent = fs.readFileSync(req.file.path);
+
+        const params = {
+            Bucket: process.env.BUCKET_NAME,
+            Key: `background-${uuidv1() + req.file.originalname}`,
+            Body: fileContent,
+            ContentType: req.file.mimetype,
+        };
+
+        const command = new PutObjectCommand(params);
+
+        const response = await s3Client.send(command);
+
+        const imageUrl = `https://${params.Bucket}.s3.${await s3Client.config.region()}.amazonaws.com/${params.Key}`;
+
         const result = await User.findById(req.user.id);
-        if (result){ 
-            result.backgroundImageUrl = blockBlobClient.url;
+        if (result){
+            
+            result.backgroundImageUrl = imageUrl;
             await result.save();
         }
         else {console.log("not found")};
@@ -414,19 +415,22 @@ app.post("/upload/post", authenticateToken, upload.single("image"), async (req, 
             newPost.content = req.body.text;
         }
         if (req.file && req.file.path){
-            const blobName = `post-image-${uuidv1()}`;
-            const stream = fs.createReadStream(req.file.path);
-            const size = req.file.size;
-            const containerClient = blobServiceClient.getContainerClient(process.env.POST_IMAGE_NAME);
-            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+            const fileContent = fs.readFileSync(req.file.path);
+            const params = {
+                Bucket: process.env.BUCKET_NAME,
+                Key: `post-${uuidv1() + req.file.originalname}`,
+                Body: fileContent,
+                ContentType: req.file.mimetype,
+            };
 
-            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
-                blobHTTPHeaders: { blobContentType: req.file.mimetype },
-            });
-            if (uploadBlobResponse){
-                newPost.image = blockBlobClient.url;
-            }
+            const command = new PutObjectCommand(params);
 
+            const response = await s3Client.send(command);
+
+            const imageUrl = `https://${params.Bucket}.s3.${await s3Client.config.region()}.amazonaws.com/${params.Key}`;
+          
+            newPost.image = imageUrl;
+            
             fs.unlinkSync(req.file.path);
         }
 
@@ -475,24 +479,26 @@ app.post("/upload/secret", authenticateToken, upload.single("image"), async (req
             newPost.content = req.body.text;
         }
         if (req.file && req.file.path){
-            const blobName = `post-image-${uuidv1()}`;
-            const stream = fs.createReadStream(req.file.path);
-            const size = req.file.size;
-            const containerClient = blobServiceClient.getContainerClient(process.env.SECRET_IMAGE_NAME);
-            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+            const fileContent = fs.readFileSync(req.file.path);
+            const params = {
+                Bucket: process.env.BUCKET_NAME,
+                Key: `secret-${uuidv1() + req.file.originalname}`,
+                Body: fileContent,
+                ContentType: req.file.mimetype,
+            };
 
-            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
-                blobHTTPHeaders: { blobContentType: req.file.mimetype },
-            });
-            if (uploadBlobResponse){
-                newPost.image = blockBlobClient.url;
-            }
+            const command = new PutObjectCommand(params);
+
+            const response = await s3Client.send(command);
+
+            const imageUrl = `https://${params.Bucket}.s3.${await s3Client.config.region()}.amazonaws.com/${params.Key}`;
+          
+            newPost.image = imageUrl;
 
             fs.unlinkSync(req.file.path);
         }
 
         newPost.save();
-        console.log(newPost);
 
         req.user.yourSecretId.unshift(newPost._id);
         req.user.save();
@@ -510,20 +516,7 @@ app.route("/post/:id")
     .get(async(req, res) => {
         try{
             const result = await Post.findById(req.params.id);
-            if (!result.secret) res.json(result);
-            else res.json({
-                _id: result._id,
-                name: result.name,
-                avatarUser: result.avatarUser,
-                content: result.content,
-                postDate: result.postDate,
-                interactDate: result.interactDate,
-                image: result.image,
-                like: result.like,
-                comment: result.comment,
-                repost: result.repost,
-                secret: result.secret,
-            });
+            res.json(result);
             
         }
         catch (e){
@@ -964,18 +957,21 @@ app.patch("/edit/post", authenticateToken, upload.single("image"), async (req, r
             post.content ="";
         }
         if (req.file && req.file.path){
-            const blobName = `post-image-${uuidv1()}`;
-            const stream = fs.createReadStream(req.file.path);
-            const size = req.file.size;
-            const containerClient = blobServiceClient.getContainerClient(process.env.POST_IMAGE_NAME);
-            const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+            const fileContent = fs.readFileSync(req.file.path);
+            const params = {
+                Bucket: process.env.BUCKET_NAME,
+                Key: `post-${uuidv1() + req.file.originalname}`,
+                Body: fileContent,
+                ContentType: req.file.mimetype,
+            };
 
-            const uploadBlobResponse = await blockBlobClient.uploadStream(stream, size, undefined, {
-                blobHTTPHeaders: { blobContentType: req.file.mimetype },
-            });
-            if (uploadBlobResponse){
-                post.image = blockBlobClient.url;
-            }
+            const command = new PutObjectCommand(params);
+
+            const response = await s3Client.send(command);
+
+            const imageUrl = `https://${params.Bucket}.s3.${await s3Client.config.region()}.amazonaws.com/${params.Key}`;
+          
+            post.image = imageUrl;
 
             fs.unlinkSync(req.file.path);
         }
@@ -995,13 +991,12 @@ app.patch("/edit/post", authenticateToken, upload.single("image"), async (req, r
 
 app.put("/delete/post", authenticateToken, async (req, res) => {
     try{
-        console.log(req.body);
 
         req.user.yourPostId = req.user.yourPostId.filter(item => String(item) !== req.body.id);
         req.user.save();
         
         await Post.findByIdAndDelete(req.body.id).then(() => {
-            console.log("success");
+
             res.status(200).send("Delete successfully");
         }).catch(e => {
             console.log(e);
@@ -1033,7 +1028,6 @@ app.patch("/edit/comment", authenticateToken, async(req, res)=>{
 // delete comment
 app.put("/delete/comment", authenticateToken, async (req, res)=>{
     try{
-        console.log(req.body);
         req.user.comment = req.user.comment.filter((item)=>(String(item)!==req.body.commentId));
         req.user.save();
 
@@ -1042,7 +1036,6 @@ app.put("/delete/comment", authenticateToken, async (req, res)=>{
         post.save();
 
         await Comment.findByIdAndDelete(req.body.commentId).then(() => {
-            console.log("success");
             res.status(200).send("Delete successfully");
         }).catch(e => {
             console.log(e);
@@ -1136,6 +1129,33 @@ app.get("/notification", authenticateToken, (req, res)=>{
         console.log(e);
         res.status(500).send("failed");
     }
+});
+
+app.patch("/changepassword", authenticateToken, (req, res)=>{
+
+    req.user.changePassword(req.body.password, req.body.newPassword, function (err) { 
+            if (err) { 
+                res.status(500).json({err:err});
+            } else { 
+                res.send('successfully change password');
+            } 
+        }); 
+    
+});
+
+app.patch("/editprofile", authenticateToken, async (req, res)=>{
+   
+    try{
+        req.user.firstName = req.body.firstName;
+        req.user.lastName = req.body.lastName;
+        await req.user.save();
+        res.send('successfully change password');
+    }
+    catch (e){
+        console.log(e);
+        res.status(500).send("failed");
+    }
+
 });
 
 const port = process.env.PORT || 3001;
